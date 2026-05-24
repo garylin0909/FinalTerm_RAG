@@ -42,6 +42,8 @@ GEMINI_API_KEY = "your_gemini_key"
 HF_TOKEN = "your_huggingface_token"
 ```
 
+For Hugging Face, create a token that can make Inference Providers calls.
+
 The app reads environment variables first, then Streamlit secrets.
 
 ## Notes

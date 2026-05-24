@@ -52,4 +52,6 @@ GEMINI_API_KEY = "your_gemini_key"
 HF_TOKEN = "your_huggingface_token"
 ```
 
+The Hugging Face token must include permission to make Inference Providers calls.
+
 Do not upload `.env` or `.streamlit/secrets.toml`.

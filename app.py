@@ -13,7 +13,6 @@ app.py — 台灣食品法規 RAG 問答系統
 """
 
 import os
-import requests
 import numpy as np
 import streamlit as st
 from pinecone import Pinecone
@@ -54,20 +53,33 @@ def _l2_normalize(vec: list) -> list:
 
 
 def _embed_hf(text: str) -> list:
-    """HuggingFace Inference API → bge-m3 dense embedding（雲端用）。"""
-    url = "https://api-inference.huggingface.co/models/BAAI/bge-m3"
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    resp = requests.post(
-        url, headers=headers,
-        json={"inputs": text, "options": {"wait_for_model": True}},
-        timeout=60,
-    )
-    resp.raise_for_status()
-    result = resp.json()
-    # feature-extraction API 回傳 shape: [seq_len, 1024]
-    # bge-m3 使用 CLS token (index 0) 作為 dense embedding
-    cls_vec = result[0]
-    return _l2_normalize(cls_vec)
+    """Hugging Face Inference Providers → bge-m3 dense embedding（雲端用）。"""
+    from huggingface_hub import InferenceClient
+
+    try:
+        client = InferenceClient(provider="hf-inference", api_key=HF_TOKEN)
+        result = client.feature_extraction(text, model="BAAI/bge-m3")
+    except Exception as exc:
+        raise RuntimeError(
+            "Hugging Face embedding 呼叫失敗。請確認 Streamlit Secrets 的 HF_TOKEN "
+            "有效，且 token 有 Inference Providers 權限。"
+        ) from exc
+
+    arr = np.asarray(result, dtype=np.float32)
+    if arr.ndim == 1:
+        vec = arr
+    elif arr.ndim == 2:
+        vec = arr[0]
+    elif arr.ndim == 3:
+        vec = arr[0][0]
+    else:
+        raise RuntimeError(f"Hugging Face embedding 回傳格式不支援：shape={arr.shape}")
+
+    if vec.shape[0] != 1024:
+        raise RuntimeError(
+            f"Hugging Face embedding 維度為 {vec.shape[0]}，但 Pinecone index 需要 1024。"
+        )
+    return _l2_normalize(vec.tolist())
 
 
 @st.cache_resource(show_spinner="載入 bge-m3 本地模型（首次需約 30 秒）...")
@@ -250,7 +262,5 @@ if question:
                 "sources": contexts,
             })
 
-        except requests.HTTPError as e:
-            st.error(f"HuggingFace API 錯誤：{e}（請確認 HF_TOKEN 是否正確）")
         except Exception as e:
             st.error(f"發生錯誤：{e}")
