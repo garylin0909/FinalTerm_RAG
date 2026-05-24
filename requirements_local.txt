@@ -1,0 +1,10 @@
+# Local indexing and testing dependencies.
+# Install with:
+#   pip install -r requirements_local.txt
+
+-r requirements.txt
+
+FlagEmbedding>=1.2.10
+tqdm>=4.66.0
+torch>=2.0.0
+transformers>=4.36.0

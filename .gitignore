@@ -1,0 +1,30 @@
+# Secrets
+.env
+.streamlit/secrets.toml
+
+# Local data and generated artifacts
+data/
+extracted_texts/
+embed_checkpoint.json
+ocr_checkpoint.json
+ocr_partial.json
+extraction_report.csv
+PROGRESS.md
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editor settings
+.vscode/
+.idea/
+*.swp
+
+# Local checkouts
+.remote_check_*/
