@@ -40,6 +40,9 @@ GEMINI_API_KEY   = _secret("GEMINI_API_KEY")
 GEMINI_MODEL     = "gemini-3.5-flash"
 HF_TOKEN         = _secret("HF_TOKEN")
 TOP_K            = 5
+LAW_TOP_K        = 6
+CASE_TOP_K       = 6
+MAX_CONTEXTS     = 12
 
 
 # ─────────────────────────────────────────────────────────────
@@ -132,6 +135,39 @@ def retrieve(question: str, top_k: int = TOP_K) -> list:
     ]
 
 
+def _context_key(item: dict) -> tuple:
+    return (item.get("source", ""), item.get("text", "")[:120])
+
+
+def _tag_contexts(contexts: list, kind: str) -> list:
+    return [{**item, "kind": kind} for item in contexts]
+
+
+def retrieve_contexts(question: str) -> list:
+    law_queries = [
+        "食品安全衛生管理法 第28條 食品 標示 宣傳 廣告 不實 誇張 易生誤解 醫療效能",
+        "食品安全衛生管理法 第45條 違反 第28條 食品廣告 不實 誇張 醫療效能 罰鍰",
+    ]
+
+    law_contexts = []
+    for query in law_queries:
+        law_contexts.extend(_tag_contexts(retrieve(query, top_k=LAW_TOP_K), "法條優先檢索"))
+
+    case_contexts = _tag_contexts(retrieve(question, top_k=CASE_TOP_K), "案例相似檢索")
+
+    merged = []
+    seen = set()
+    for item in law_contexts + case_contexts:
+        key = _context_key(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+        if len(merged) >= MAX_CONTEXTS:
+            break
+    return merged
+
+
 # ─────────────────────────────────────────────────────────────
 # Gemini 生成
 # ─────────────────────────────────────────────────────────────
@@ -141,7 +177,7 @@ def generate(question: str, contexts: list) -> str:
     model = genai.GenerativeModel(GEMINI_MODEL)
 
     ctx_text = "\n\n---\n\n".join(
-        f"【來源：{c['source']}（相似度 {c['score']}）】\n{c['text']}"
+        f"【{c.get('kind', '檢索')}｜來源：{c['source']}（相似度 {c['score']}）】\n{c['text']}"
         for c in contexts
     )
 
@@ -155,6 +191,7 @@ def generate(question: str, contexts: list) -> str:
 4. 第 2 點必須整理一個檢索到的某年判罰案例；若沒有案例年份或判罰資料，請明確說明「目前檢索資料未提供足夠判罰案例」。
 5. 第 3 點必須提供可直接使用的修改建議，格式為「建議修改為：__」。
 6. 只能依據提供的參考資料回答；資料不足時要誠實說明，不要捏造法條、年份、金額或案例。
+7. 優先從「法條優先檢索」來源找第 1 點的法條依據，再從「案例相似檢索」來源找第 2 點的裁罰案例。
 
 輸出格式：
 1. 根據食安法第XX條，...
@@ -227,7 +264,7 @@ if question:
     with st.chat_message("assistant"):
         try:
             with st.spinner("🔍 正在 Pinecone 向量資料庫搜尋…"):
-                contexts = retrieve(question, top_k=TOP_K)
+                contexts = retrieve_contexts(question)
 
             with st.spinner("✍️ Gemini 生成回答中…"):
                 answer = generate(question, contexts)
@@ -236,7 +273,10 @@ if question:
 
             with st.expander(f"📄 參考來源（{len(contexts)} 筆）"):
                 for i, s in enumerate(contexts, 1):
-                    st.markdown(f"**{i}. {s['source']}**　相似度：`{s['score']}`")
+                    st.markdown(
+                        f"**{i}. {s['source']}**　"
+                        f"類型：`{s.get('kind', '檢索')}`　相似度：`{s['score']}`"
+                    )
                     st.text(s["text"][:400] + ("…" if len(s["text"]) > 400 else ""))
                     if i < len(contexts):
                         st.divider()
