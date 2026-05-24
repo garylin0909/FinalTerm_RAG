@@ -187,7 +187,7 @@ st.set_page_config(
 st.title("🍱 台灣食品法規問答系統")
 st.caption(
     "知識庫：食安法、GHP、HACCP 指引、違規廣告處罰案件｜"
-    "已處理 1,010 份來源（排除 3 份空白/暫存檔），950 份文字參考檔，17,611 筆向量片段｜"
+    "使用 Pinecone 向量資料庫｜"
     "模型：BAAI/bge-m3 + Gemini 3.5 Flash"
 )
 
@@ -200,29 +200,6 @@ if not GEMINI_API_KEY:
 if missing:
     st.error(f"❌ 缺少必要設定：{', '.join(missing)}。請在 `.env` 或 Streamlit Cloud Secrets 中填入。")
     st.stop()
-
-# ── 側欄 ──────────────────────────────────────
-with st.sidebar:
-    st.header("⚙️ 設定")
-    top_k = st.slider("回傳條文數量 (Top-K)", min_value=1, max_value=10, value=TOP_K)
-    st.divider()
-    st.markdown("**Embedding 模式**")
-    if HF_TOKEN:
-        st.success("☁️ HuggingFace API（雲端）")
-    else:
-        st.info("💻 本地 FlagEmbedding")
-    st.divider()
-    if st.button("🗑️ 清除對話紀錄"):
-        st.session_state.history = []
-        st.rerun()
-    st.divider()
-    st.markdown(
-        "**範例問題**\n"
-        "- 食品添加物有哪些規定？\n"
-        "- HACCP 適用於哪些業者？\n"
-        "- 違規健康食品廣告的罰則是什麼？\n"
-        "- 食品標示需要包含哪些資訊？"
-    )
 
 # ── 對話歷史 ──────────────────────────────────
 if "history" not in st.session_state:
@@ -250,7 +227,7 @@ if question:
     with st.chat_message("assistant"):
         try:
             with st.spinner("🔍 正在 Pinecone 向量資料庫搜尋…"):
-                contexts = retrieve(question, top_k=top_k)
+                contexts = retrieve(question, top_k=TOP_K)
 
             with st.spinner("✍️ Gemini 生成回答中…"):
                 answer = generate(question, contexts)
