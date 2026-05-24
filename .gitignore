@@ -28,3 +28,5 @@ env/
 
 # Local checkouts
 .remote_check_*/
+.codex_deps/
+supplemental_processing_report.csv
