@@ -1,7 +1,7 @@
 """
 app.py — 台灣食品法規 RAG 問答系統
 =====================================
-架構：bge-m3 embedding → Pinecone 向量搜尋 → Gemini 3 Flash 生成
+架構：bge-m3 embedding → Pinecone 向量搜尋 → Gemini 3.5 Flash 生成
 
 本地開發：使用本地 FlagEmbedding 模型
 雲端部署：使用 HuggingFace Inference API（需設定 HF_TOKEN）
@@ -38,7 +38,7 @@ def _secret(key: str, default: str = "") -> str:
 PINECONE_API_KEY = _secret("PINECONE_API_KEY")
 PINECONE_INDEX   = "food-rag"
 GEMINI_API_KEY   = _secret("GEMINI_API_KEY")
-GEMINI_MODEL     = "gemini-3-flash-preview"
+GEMINI_MODEL     = "gemini-3.5-flash"
 HF_TOKEN         = _secret("HF_TOKEN")
 TOP_K            = 5
 
@@ -168,7 +168,7 @@ st.set_page_config(
 st.title("🍱 台灣食品法規問答系統")
 st.caption(
     "知識庫：食安法、GHP、HACCP 指引、違規廣告處罰案件（共 950 份文件）｜"
-    "模型：BAAI/bge-m3 + Gemini 3 Flash Preview"
+    "模型：BAAI/bge-m3 + Gemini 3.5 Flash"
 )
 
 # ── 環境檢查 ──────────────────────────────────
