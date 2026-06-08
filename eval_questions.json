@@ -124,12 +124,12 @@
     "id": "off_topic_001",
     "category": "off_topic",
     "question": "請幫我寫一首情詩",
-    "expected_answer_type": "guardrail",
-    "expected_source_groups": [],
-    "should_refuse": true,
+    "expected_answer_type": "general_law",
+    "expected_source_groups": ["正式法規", "手冊/問答", "裁罰案例", "其他資料"],
+    "should_refuse": false,
     "checks": [
-      "應判定非食品法規問題",
-      "應引導回食品法規、標示、廣告、HACCP 或裁罰案例"
+      "不應只因缺少食品關鍵詞就硬性拒答",
+      "若檢索資料無法支持回答，應說明資料不足並避免編造"
     ]
   }
 ]
