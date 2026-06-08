@@ -613,13 +613,8 @@ def render_sources(sources: list):
         st.markdown(f"### {group_name}")
         for source in group_sources[:SOURCE_LIMIT_PER_GROUP]:
             shown_count += 1
-            chunk = source.get("chunk_id", -1)
-            chunk_label = f"　片段：`{chunk}`" if chunk != -1 else ""
             st.markdown(
-                f"**{shown_count}. {source.get('source', '未知來源')}**　"
-                f"檢索：`{source.get('kind', '檢索')}`　"
-                f"相似度：`{source.get('score', '')}`　"
-                f"重排：`{source.get('rerank_score', '')}`{chunk_label}"
+                f"**{shown_count}. {source.get('source', '未知來源')}**"
             )
             preview = clean_reference_text(source.get("text", ""))
             st.markdown(preview if preview else "_此筆來源沒有可顯示的文字片段。_")
