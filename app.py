@@ -43,6 +43,8 @@ HF_TOKEN         = _secret("HF_TOKEN")
 TOP_K            = 5
 LAW_TOP_K        = 4
 CASE_TOP_K       = 6
+LAW_CANDIDATE_K  = 8
+CASE_CANDIDATE_K = 12
 MAX_CONTEXTS     = 12
 MAX_LAW_QUERIES  = 5
 SOURCE_LIMIT_PER_GROUP = 4
@@ -80,6 +82,11 @@ CASE_SOURCE_TERMS = (
     "罰鍰",
     "案件",
 )
+
+STOPWORDS = {
+    "請問", "可以", "是否", "哪些", "什麼", "如何", "怎麼", "需要", "一定",
+    "食品", "法規", "規定", "相關", "使用", "問題", "資料", "標準",
+}
 
 
 LAW_QUERY_RULES = [
@@ -363,12 +370,119 @@ def _question_priority(item: dict, question: str) -> int:
     return 0
 
 
+def extract_query_terms(question: str) -> set[str]:
+    normalized = re.sub(r"\s+", " ", question or "").strip()
+    terms = set()
+
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9+.-]*|\d+|[\u4e00-\u9fff]{2,}", normalized):
+        token = token.casefold()
+        if token not in STOPWORDS and len(token) >= 2:
+            terms.add(token)
+
+    for _, triggers in QUESTION_TYPE_RULES:
+        for trigger in triggers:
+            if trigger.casefold() in normalized.casefold():
+                terms.add(trigger.casefold())
+
+    return terms
+
+
+def _term_overlap_score(question_terms: set[str], item: dict) -> float:
+    if not question_terms:
+        return 0.0
+
+    combined = f"{item.get('source', '')}\n{item.get('text', '')}".casefold()
+    matched = sum(1 for term in question_terms if term in combined)
+    return matched / max(len(question_terms), 1)
+
+
+def _phrase_score(question: str, item: dict) -> float:
+    text = clean_reference_text(item.get("text", ""), max_chars=1200).casefold()
+    source = item.get("source", "").casefold()
+    normalized = re.sub(r"\s+", "", question or "").casefold()
+    combined = re.sub(r"\s+", "", f"{source}{text}")
+
+    if not normalized:
+        return 0.0
+    if normalized in combined:
+        return 1.0
+
+    chunks = [normalized[i : i + 4] for i in range(0, max(len(normalized) - 3, 0), 2)]
+    chunks = [chunk for chunk in chunks if len(chunk) >= 4 and chunk not in STOPWORDS]
+    if not chunks:
+        return 0.0
+
+    matched = sum(1 for chunk in chunks if chunk in combined)
+    return matched / len(chunks)
+
+
+def _type_match_score(question_type: str, item: dict) -> float:
+    source_group = item.get("source_group") or classify_source(item)
+    source = item.get("source", "")
+    text = item.get("text", "")
+    combined = f"{source}\n{text}"
+
+    if question_type == "case_query":
+        return 1.0 if source_group == "裁罰案例" else 0.2
+    if question_type == "ad_copy":
+        return 1.0 if _contains_any(combined, ("廣告", "宣稱", "療效", "誇張", "不實", "易生誤解", "醫療效能")) else 0.0
+    if question_type == "labeling":
+        return 1.0 if _contains_any(combined, ("標示", "標籤", "有效日期", "保存期限", "成分", "營養標示")) else 0.0
+    if question_type == "testing_standard":
+        return 1.0 if _contains_any(combined, ("檢驗", "限量", "標準", "殘留", "農藥", "重金屬", "添加物", "動物用藥", "微生物")) else 0.0
+    if question_type == "compliance":
+        return 1.0 if _contains_any(combined, ("HACCP", "GHP", "衛生", "稽查", "業者", "製程", "餐飲")) else 0.0
+    return 0.4 if source_group == "正式法規" else 0.0
+
+
 def _rank_score(item: dict, question: str) -> float:
     return (
         item.get("score", 0)
         + _source_priority(item) * 0.08
         + _question_priority(item, question) * 0.06
     )
+
+
+def rerank_contexts(contexts: list, question: str) -> list:
+    question_type = classify_question_type(question)
+    question_terms = extract_query_terms(question)
+    reranked = []
+
+    for item in contexts:
+        enriched = {
+            **item,
+            "source_group": item.get("source_group") or classify_source(item),
+        }
+        semantic_score = enriched.get("score", 0)
+        source_score = _source_priority(enriched) / 4
+        question_score = _question_priority(enriched, question) / 3
+        term_score = _term_overlap_score(question_terms, enriched)
+        phrase_score = _phrase_score(question, enriched)
+        type_score = _type_match_score(question_type, enriched)
+
+        rerank_score = (
+            semantic_score * 0.45
+            + source_score * 0.18
+            + term_score * 0.14
+            + type_score * 0.12
+            + question_score * 0.07
+            + phrase_score * 0.04
+        )
+        reranked.append({
+            **enriched,
+            "question_type": question_type,
+            "rerank_score": round(rerank_score, 4),
+        })
+
+    reranked.sort(
+        key=lambda item: (
+            item.get("rerank_score", 0),
+            _source_priority(item),
+            item.get("score", 0),
+        ),
+        reverse=True,
+    )
+    return reranked
 
 
 def _text_fingerprint(text: str) -> str:
@@ -460,15 +574,11 @@ def _merge_contexts(context_groups: list) -> list:
 def retrieve_contexts(question: str) -> list:
     law_contexts = []
     for query in build_law_queries(question):
-        law_contexts.extend(_tag_contexts(retrieve(query, top_k=LAW_TOP_K), "法規導向檢索"))
+        law_contexts.extend(_tag_contexts(retrieve(query, top_k=LAW_CANDIDATE_K), "法規導向檢索"))
 
-    case_contexts = _tag_contexts(retrieve(question, top_k=CASE_TOP_K), "案例相似檢索")
+    case_contexts = _tag_contexts(retrieve(question, top_k=CASE_CANDIDATE_K), "案例相似檢索")
     contexts = _merge_contexts([law_contexts, case_contexts])
-    contexts.sort(
-        key=lambda item: (_source_priority(item), _question_priority(item, question), item.get("score", 0)),
-        reverse=True,
-    )
-    return contexts[:MAX_CONTEXTS]
+    return rerank_contexts(contexts, question)[:MAX_CONTEXTS]
 
 
 def clean_reference_text(text: str, max_chars: int = 600) -> str:
@@ -508,7 +618,8 @@ def render_sources(sources: list):
             st.markdown(
                 f"**{shown_count}. {source.get('source', '未知來源')}**　"
                 f"檢索：`{source.get('kind', '檢索')}`　"
-                f"相似度：`{source.get('score', '')}`{chunk_label}"
+                f"相似度：`{source.get('score', '')}`　"
+                f"重排：`{source.get('rerank_score', '')}`{chunk_label}"
             )
             preview = clean_reference_text(source.get("text", ""))
             st.markdown(preview if preview else "_此筆來源沒有可顯示的文字片段。_")
@@ -575,7 +686,7 @@ def generate(question: str, contexts: list) -> str:
 
     ctx_text = "\n\n---\n\n".join(
         f"【{c.get('source_group', classify_source(c))}｜{c.get('kind', '檢索')}｜來源：{c['source']}｜片段：{c.get('chunk_id', -1)}"
-        f"（相似度 {c['score']}）】\n{clean_reference_text(c.get('text', ''), max_chars=1200)}"
+        f"（相似度 {c['score']}｜重排 {c.get('rerank_score', '')}）】\n{clean_reference_text(c.get('text', ''), max_chars=1200)}"
         for c in contexts
     )
 
