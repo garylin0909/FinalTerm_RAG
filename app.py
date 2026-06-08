@@ -45,6 +45,41 @@ LAW_TOP_K        = 4
 CASE_TOP_K       = 6
 MAX_CONTEXTS     = 12
 MAX_LAW_QUERIES  = 5
+SOURCE_LIMIT_PER_GROUP = 4
+
+
+OFFICIAL_LAW_SOURCE_TERMS = (
+    "食品安全衛生管理法",
+    "食品安全衛生管理法施行細則",
+    "食品添加物使用範圍及限量暨規格標準",
+    "健康食品管理法",
+    "食品良好衛生規範準則",
+    "食品安全管制系統準則",
+    "法規條文",
+)
+
+ADDITIVE_SOURCE_TERMS = (
+    "食品添加物使用範圍及限量暨規格標準",
+    "食品添加物",
+)
+
+GUIDE_SOURCE_TERMS = (
+    "手冊",
+    "問答",
+    "指引",
+    "懶人包",
+    "QA",
+    "Q&A",
+)
+
+CASE_SOURCE_TERMS = (
+    "裁罰",
+    "處罰",
+    "違規廣告",
+    "判罰",
+    "罰鍰",
+    "案件",
+)
 
 
 LAW_QUERY_RULES = [
@@ -59,8 +94,10 @@ LAW_QUERY_RULES = [
     (
         ("添加物", "防腐劑", "色素", "甜味劑", "香料", "漂白劑"),
         [
-            "食品安全衛生管理法 食品添加物 使用範圍 限量 規格 標示",
             "食品添加物使用範圍及限量暨規格標準 食品添加物 限量 使用規定",
+            "食品添加物使用範圍及限量暨規格標準 附表 食品添加物 使用範圍 限量",
+            "食品安全衛生管理法 第18條 食品添加物 使用範圍 限量 規格標準",
+            "食品安全衛生管理法 食品添加物 使用範圍 限量 規格 標示",
         ],
     ),
     (
@@ -178,25 +215,85 @@ def retrieve(question: str, top_k: int = TOP_K) -> list:
     ]
 
 
-def _context_key(item: dict) -> tuple:
-    return (item.get("source", ""), item.get("text", "")[:120])
-
-
 def _tag_contexts(contexts: list, kind: str) -> list:
     return [{**item, "kind": kind} for item in contexts]
+
+
+def _contains_any(value: str, terms: tuple[str, ...]) -> bool:
+    lowered = value.casefold()
+    return any(term.casefold() in lowered for term in terms)
+
+
+def classify_source(item: dict) -> str:
+    source = item.get("source", "")
+    text = item.get("text", "")
+    combined = f"{source}\n{text}"
+
+    if _contains_any(source, OFFICIAL_LAW_SOURCE_TERMS):
+        return "正式法規"
+    if _contains_any(source, CASE_SOURCE_TERMS) or _contains_any(combined, ("處罰案件", "裁罰案例", "違規廣告")):
+        return "裁罰案例"
+    if _contains_any(source, GUIDE_SOURCE_TERMS):
+        return "手冊/問答"
+    return "其他資料"
+
+
+def _source_priority(item: dict) -> int:
+    group = item.get("source_group") or classify_source(item)
+    return {
+        "正式法規": 4,
+        "裁罰案例": 3,
+        "手冊/問答": 2,
+        "其他資料": 1,
+    }.get(group, 1)
+
+
+def _question_priority(item: dict, question: str) -> int:
+    source = item.get("source", "")
+    text = item.get("text", "")
+    combined = f"{source}\n{text}"
+    if _contains_any(question, ("添加物", "防腐劑", "色素", "甜味劑", "香料", "漂白劑")):
+        if _contains_any(source, ADDITIVE_SOURCE_TERMS):
+            return 3
+        if _contains_any(combined, ADDITIVE_SOURCE_TERMS):
+            return 1
+    return 0
+
+
+def _rank_score(item: dict, question: str) -> float:
+    return (
+        item.get("score", 0)
+        + _source_priority(item) * 0.08
+        + _question_priority(item, question) * 0.06
+    )
+
+
+def _text_fingerprint(text: str) -> str:
+    text = clean_reference_text(text, max_chars=900)
+    text = re.sub(r"[^\w\u4e00-\u9fff]+", "", text).casefold()
+    return text[:260]
+
+
+def _context_key(item: dict) -> tuple:
+    fingerprint = _text_fingerprint(item.get("text", ""))
+    if len(fingerprint) >= 80:
+        return ("content", fingerprint)
+    return ("source", item.get("source", ""), item.get("chunk_id", -1), fingerprint)
 
 
 def build_law_queries(question: str) -> list:
     """依使用者問題產生法規導向查詢，避免每題都只查固定條文。"""
     normalized_question = re.sub(r"\s+", " ", question).strip()
-    queries = [
-        f"{normalized_question} 食品安全衛生管理法 條文 規定 罰則",
-        f"{normalized_question} 食品法規 食品衛生 標示 廣告 罰鍰 案例",
-    ]
+    triggered_queries = []
 
     for triggers, rule_queries in LAW_QUERY_RULES:
         if any(trigger.lower() in normalized_question.lower() for trigger in triggers):
-            queries.extend(rule_queries)
+            triggered_queries.extend(rule_queries)
+
+    queries = triggered_queries + [
+        f"{normalized_question} 食品安全衛生管理法 條文 規定 罰則",
+        f"{normalized_question} 食品法規 食品衛生 標示 廣告 罰鍰 案例",
+    ]
 
     queries.append("食品安全衛生管理法 食品業者 法規義務 違規 裁罰")
 
@@ -217,21 +314,31 @@ def _merge_contexts(context_groups: list) -> list:
     best_by_key = {}
     for contexts in context_groups:
         for item in contexts:
+            item = {
+                **item,
+                "source_group": classify_source(item),
+            }
             key = _context_key(item)
             current = best_by_key.get(key)
-            if current is None or item.get("score", 0) > current.get("score", 0):
+            if current is None or _rank_score(item, "") > _rank_score(current, ""):
                 best_by_key[key] = item
 
     law_items = [
         item for item in best_by_key.values()
-        if item.get("kind") == "法條優先檢索"
+        if item.get("kind") == "法規導向檢索"
     ]
     other_items = [
         item for item in best_by_key.values()
-        if item.get("kind") != "法條優先檢索"
+        if item.get("kind") != "法規導向檢索"
     ]
-    law_items.sort(key=lambda item: item.get("score", 0), reverse=True)
-    other_items.sort(key=lambda item: item.get("score", 0), reverse=True)
+    law_items.sort(
+        key=lambda item: (_source_priority(item), item.get("score", 0)),
+        reverse=True,
+    )
+    other_items.sort(
+        key=lambda item: (_source_priority(item), item.get("score", 0)),
+        reverse=True,
+    )
 
     merged = []
     source_counts = {}
@@ -250,10 +357,15 @@ def _merge_contexts(context_groups: list) -> list:
 def retrieve_contexts(question: str) -> list:
     law_contexts = []
     for query in build_law_queries(question):
-        law_contexts.extend(_tag_contexts(retrieve(query, top_k=LAW_TOP_K), "法條優先檢索"))
+        law_contexts.extend(_tag_contexts(retrieve(query, top_k=LAW_TOP_K), "法規導向檢索"))
 
     case_contexts = _tag_contexts(retrieve(question, top_k=CASE_TOP_K), "案例相似檢索")
-    return _merge_contexts([law_contexts, case_contexts])
+    contexts = _merge_contexts([law_contexts, case_contexts])
+    contexts.sort(
+        key=lambda item: (_source_priority(item), _question_priority(item, question), item.get("score", 0)),
+        reverse=True,
+    )
+    return contexts[:MAX_CONTEXTS]
 
 
 def clean_reference_text(text: str, max_chars: int = 600) -> str:
@@ -270,18 +382,38 @@ def clean_reference_text(text: str, max_chars: int = 600) -> str:
 
 
 def render_sources(sources: list):
-    for i, source in enumerate(sources, 1):
-        chunk = source.get("chunk_id", -1)
-        chunk_label = f"　片段：`{chunk}`" if chunk != -1 else ""
-        st.markdown(
-            f"**{i}. {source.get('source', '未知來源')}**　"
-            f"類型：`{source.get('kind', '檢索')}`　"
-            f"相似度：`{source.get('score', '')}`{chunk_label}"
-        )
-        preview = clean_reference_text(source.get("text", ""))
-        st.markdown(preview if preview else "_此筆來源沒有可顯示的文字片段。_")
-        if i < len(sources):
+    grouped = {
+        "正式法規": [],
+        "手冊/問答": [],
+        "裁罰案例": [],
+        "其他資料": [],
+    }
+    for source in sources:
+        group = source.get("source_group") or classify_source(source)
+        grouped.setdefault(group, []).append(source)
+
+    shown_count = 0
+    for group_name, group_sources in grouped.items():
+        if not group_sources:
+            continue
+
+        st.markdown(f"### {group_name}")
+        for source in group_sources[:SOURCE_LIMIT_PER_GROUP]:
+            shown_count += 1
+            chunk = source.get("chunk_id", -1)
+            chunk_label = f"　片段：`{chunk}`" if chunk != -1 else ""
+            st.markdown(
+                f"**{shown_count}. {source.get('source', '未知來源')}**　"
+                f"檢索：`{source.get('kind', '檢索')}`　"
+                f"相似度：`{source.get('score', '')}`{chunk_label}"
+            )
+            preview = clean_reference_text(source.get("text", ""))
+            st.markdown(preview if preview else "_此筆來源沒有可顯示的文字片段。_")
             st.divider()
+
+        hidden_count = len(group_sources) - SOURCE_LIMIT_PER_GROUP
+        if hidden_count > 0:
+            st.caption(f"另有 {hidden_count} 筆{group_name}來源已略過，可提高顯示上限查看。")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -293,7 +425,7 @@ def generate(question: str, contexts: list) -> str:
     model = genai.GenerativeModel(GEMINI_MODEL)
 
     ctx_text = "\n\n---\n\n".join(
-        f"【{c.get('kind', '檢索')}｜來源：{c['source']}｜片段：{c.get('chunk_id', -1)}"
+        f"【{c.get('source_group', classify_source(c))}｜{c.get('kind', '檢索')}｜來源：{c['source']}｜片段：{c.get('chunk_id', -1)}"
         f"（相似度 {c['score']}）】\n{clean_reference_text(c.get('text', ''), max_chars=1200)}"
         for c in contexts
     )
@@ -308,7 +440,7 @@ def generate(question: str, contexts: list) -> str:
 4. 第 2 點必須整理一個檢索到的某年判罰案例；若沒有案例年份或判罰資料，請明確說明「目前檢索資料未提供足夠判罰案例」。
 5. 第 3 點必須提供可直接使用的修改建議，格式為「建議修改為：__」。
 6. 只能依據提供的參考資料回答；資料不足時要誠實說明，不要捏造法條、年份、金額或案例。
-7. 優先從「法條優先檢索」來源找第 1 點的法條依據，但必須選擇與使用者問題最相關的條文，不要固定套用某一條。
+7. 優先從「正式法規」與「法規導向檢索」來源找第 1 點的法條依據；手冊、問答或指引只能作為輔助說明，不要拿來取代正式法規。
 8. 再從「案例相似檢索」或其他提供案例內容的來源找第 2 點的裁罰案例。
 
 輸出格式：
