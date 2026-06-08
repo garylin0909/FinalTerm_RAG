@@ -24,6 +24,19 @@
     ]
   },
   {
+    "id": "ad_claim_002",
+    "category": "advertising",
+    "question": "天然草本膠囊廣告可以寫降三高、抗癌防癌、糖尿病30天根治不復發嗎？",
+    "expected_answer_type": "ad_copy",
+    "expected_source_groups": ["正式法規", "裁罰案例"],
+    "should_refuse": false,
+    "checks": [
+      "應通過食品法規 guardrail 並進行檢索",
+      "應判定涉及醫療效能或誇大不實風險",
+      "應顯示參考來源"
+    ]
+  },
+  {
     "id": "labeling_001",
     "category": "labeling",
     "question": "食品標示一定要寫有效日期和成分嗎？",
